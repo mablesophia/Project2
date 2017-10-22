@@ -66,7 +66,7 @@ public:
   RC close() { return -1; };
 };
 
-
+class Page;
 class RecordBasedFileManager
 {
 public:
@@ -134,7 +134,10 @@ private:
   static RecordBasedFileManager *_rbf_manager;
   static PagedFileManager * pfm;
   RC findLoc(int a, FileHandle &fileHandle);
-};;
+  void getPageInfo(FileHandle &fileHandle, Page &pg, PageNum num, int &offset);
+  void getAnotherPageAndRecordDetails(FileHandle &fileHandle, Page &pg, PageNum num, int &rlen, int &roffset, int &offset);
+  void getPageAndSlotDetails(FileHandle &fileHandle, Page &pg, RID rid, int &rlen, int &roffset, int &offset);
+};
 
 struct Slot {
 	int offset;

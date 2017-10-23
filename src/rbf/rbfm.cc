@@ -364,6 +364,53 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 	return 0;
 }
 
+RC RecordBasedFileManager::readAttribute(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, const string &attributeName, void *data) {
+	Page pg;
+	int offset, rlen, roffset;
+	getPageAndSlotDetails(fileHandle, pg, rid, rlen, roffset, offset);
+
+	char* r = (char*)malloc(rlen + 1);
+	r[rlen] = '\0';
+
+	memcpy(r, pg.buf + roffset, rlen);
+
+	offset = 0;
+	int null_byte = ceil(1.0 * recordDescriptor.size() / 8);
+	unsigned char* null_indicator = (unsigned char*)malloc(null_byte);
+	memcpy(null_indicator,r,null_byte);
+	offset = null_byte;
+	int null_byte_num;
+	int null_bit_num;
+	bool flag = false;
+	for (int i = 0; i < recordDescriptor.size(); i++) {
+		null_byte_num = i / 8;
+	    null_bit_num = i % 8;
+	    flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
+	    flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
+	    if (flag) {
+	    	if(recordDescriptor[i].name == attributeName) data = NULL;
+	    } else {
+	    	if(recordDescriptor[i].type == TypeVarChar) {
+	    		int len;
+	    		memcpy(&len,r + offset, 4 * sizeof(char));
+	    		offset += 4 * sizeof(char);
+	    		if(recordDescriptor[i].name == attributeName) {
+	    			memcpy(data, r + offset, len);
+	    			break;
+	    		}
+	    		offset += len;
+	    	}
+	    	else if(recordDescriptor[i].name == attributeName) {
+	    		memcpy(data, r + offset, recordDescriptor[i].length);
+	    		break;
+	    	} else offset += recordDescriptor[i].length;
+
+	    }
+	}
+	return 0;
+}
+
+
 RC RecordBasedFileManager::findLoc(int size, FileHandle & fh) {
 	int curr = fh.getNumberOfPages();
 	int sp;
@@ -402,10 +449,7 @@ void RecordBasedFileManager::getPageInfo(FileHandle &fileHandle, Page &pg, PageN
 	memcpy(&pg.headPtr, pg.buf + offset, sizeof(int));
 	if (pg.headPtr != pg.free_sp - pg.snum * 8 - 12) pg.headPtr = pg.free_sp - pg.snum * 8 - 12;
 }
-//void RecordBasedFileManager::getAnotherPageAndRecordDetails(FileHandle &fileHandle, Page &pg, PageNum num, int &rlen, int &roffset, int &offset) {
-//	getPageInfo(fileHandle, pg, num, offset);
-//
-//}
+
 
 void RecordBasedFileManager::getPageAndSlotDetails(FileHandle &fileHandle, Page &pg, RID rid, int &rlen, int &roffset, int &offset) {
 //	fileHandle.readPage(rid.pageNum - 1, pg.buf);

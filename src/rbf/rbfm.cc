@@ -125,13 +125,17 @@ RC RecordBasedFileManager::readRecord(FileHandle &fileHandle, const vector<Attri
     offset += sizeof(int);
     memcpy(&rlen, pg.buf + offset, sizeof(int));
     int localSlotNum, localOffset;
-    if(roffset >= PAGE_SIZE || roffset < 0) {
-    	int num = roffset / PAGE_SIZE;
-    	fileHandle.readPage(rid.pageNum - 1 + num, pg.buf);
-    	localSlotNum = roffset % PAGE_SIZE;
-    	memcpy(&localOffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - localSlotNum * sizeof(Slot), sizeof(int));
-    } else {
-    	localOffset = roffset;
+    localOffset = roffset;
+    while(true) {
+		if(localOffset >= PAGE_SIZE || localOffset < 0) {
+			int num = localOffset / PAGE_SIZE;
+			fileHandle.readPage(rid.pageNum - 1 + num, pg.buf);
+			localSlotNum = localOffset % PAGE_SIZE;
+			if(localSlotNum < 0) localSlotNum += PAGE_SIZE;
+			memcpy(&localOffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - localSlotNum * sizeof(Slot), sizeof(int));
+		} else {
+			break;
+		}
     }
     memcpy(data, pg.buf + localOffset, rlen);
     memset(data + rlen, '\0', 1);
@@ -252,12 +256,12 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 	if(r.size <= rlen) {
 		int num = 0;
 		RID newRid;
-		bool flag = true;
+//		bool flag = true;
 		int tempSN = rid.slotNum;
 		int tempPN = rid.pageNum;
 		newRid.pageNum = tempPN;
 		newRid.slotNum = tempSN;
-		while(flag) {
+		while(true) {
 			if (roffset >= PAGE_SIZE || roffset < 0) {
 				memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
 				fileHandle.writePage(tempPN - 1, pg.buf);
@@ -266,14 +270,14 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 				newRid.pageNum = roffset / PAGE_SIZE + tempPN;
 				tempSN = newRid.slotNum;
 				tempPN = newRid.pageNum;
+				fileHandle.readPage(newRid.pageNum - 1, pg.buf);
 //				getPageInfo(fileHandle, pg, rid.pageNum - 1 + num, offset);
 //				memcpy(pg.buf + offset - roffset % PAGE_SIZE * sizeof(Slot) + sizeof(int), &r.size, sizeof(int));
 				memcpy(&roffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - roffset % PAGE_SIZE * sizeof(Slot), sizeof(int));
-			}
-			flag = false;
+			} else break;
 		}
 		getPageInfo(fileHandle, pg, rid.pageNum - 1 + num, offset);
-		memcpy(pg.buf + offset - newRid.slotNum * sizeof(Slot) + sizeof(int), &r.size, sizeof(int));
+		memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &r.size, sizeof(int));
 
 		int diff = rlen - r.size;
 		pg.free_sp -= diff;
@@ -299,23 +303,23 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 	} else {
 		int num = 0;
 		RID newRid;
-		bool flag = true;
+//		bool flag = true;
 		int tempSN = rid.slotNum;
 		int tempPN = rid.pageNum;
 		newRid.pageNum = tempPN;
 		newRid.slotNum = tempSN;
-		while(flag) {
+		while(true) {
 			if (roffset >= PAGE_SIZE || roffset < 0) {
 				memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
 				fileHandle.writePage(tempPN - 1, pg.buf);
 				num += roffset / PAGE_SIZE;
 				newRid.slotNum = roffset % PAGE_SIZE;
 				newRid.pageNum = roffset / PAGE_SIZE + tempPN;
+				fileHandle.readPage(newRid.pageNum - 1, pg.buf);
 				memcpy(&roffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - roffset % PAGE_SIZE * sizeof(Slot), sizeof(int));
 				tempSN = newRid.slotNum;
 				tempPN = newRid.pageNum;
-			}
-			flag = false;
+			} else break;
 		}
 		deleteRecord(fileHandle, recordDescriptor, newRid);
 		memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
@@ -332,9 +336,9 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 			pg.free_sp += rlen;
 			roffset = pg.headPtr;
 			pg.headPtr += rlen;
-			memcpy(pg.buf + offset, &rlen, sizeof(int));
-			offset -= sizeof(int);
-			memcpy(pg.buf + offset, &roffset, sizeof(int));
+			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &rlen, sizeof(int));
+//			offset -= sizeof(int);
+			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot), &roffset, sizeof(int));
 			memcpy(pg.buf + PAGE_SIZE - 3 * sizeof(int), &pg.headPtr, sizeof(int));
 			memcpy(pg.buf + PAGE_SIZE - sizeof(int), &pg.free_sp, sizeof(int));
 			fileHandle.writePage(rid.pageNum - 1 + num, pg.buf);
@@ -349,9 +353,9 @@ RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<At
 			localSlot = newRid2.slotNum;
 			roffset = (newRid2.pageNum - rid.pageNum) * PAGE_SIZE + localSlot;
 			rlen = r.size;
-			memcpy(pg.buf + offset, &rlen, sizeof(int));
+			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &rlen, sizeof(int));
 			offset -= sizeof(int);
-			memcpy(pg.buf + offset, &roffset, sizeof(int));
+			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot), &roffset, sizeof(int));
 			fileHandle.writePage(rid.pageNum - 1 + num, pg.buf);
 //			free(tmp);
 		}
@@ -398,10 +402,10 @@ void RecordBasedFileManager::getPageInfo(FileHandle &fileHandle, Page &pg, PageN
 	memcpy(&pg.headPtr, pg.buf + offset, sizeof(int));
 	if (pg.headPtr != pg.free_sp - pg.snum * 8 - 12) pg.headPtr = pg.free_sp - pg.snum * 8 - 12;
 }
-void RecordBasedFileManager::getAnotherPageAndRecordDetails(FileHandle &fileHandle, Page &pg, PageNum num, int &rlen, int &roffset, int &offset) {
-	getPageInfo(fileHandle, pg, num, offset);
-
-}
+//void RecordBasedFileManager::getAnotherPageAndRecordDetails(FileHandle &fileHandle, Page &pg, PageNum num, int &rlen, int &roffset, int &offset) {
+//	getPageInfo(fileHandle, pg, num, offset);
+//
+//}
 
 void RecordBasedFileManager::getPageAndSlotDetails(FileHandle &fileHandle, Page &pg, RID rid, int &rlen, int &roffset, int &offset) {
 //	fileHandle.readPage(rid.pageNum - 1, pg.buf);

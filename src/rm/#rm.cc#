@@ -1,4 +1,5 @@
-#include "rm.h"
+/home/raylee/下载/rm.h
+/home/raylee/下载/rm.cc#include "rm.h"
 #include <iostream>
 
 RelationManager* RelationManager::instance()
@@ -27,14 +28,54 @@ RelationManager::~RelationManager()
 }
 vector<Attribute> RelationManager::vector_table() {
    vector<Attribute> record;
-   getTableAttr(record);
+   Attribute attribute;
+
+   attribute.name = "table-id";
+   attribute.type = TypeInt;
+   attribute.length = (AttrLength)4;
+   record.push_back(attribute);
+
+   attribute.name = "table-name";
+   attribute.type = TypeVarChar;
+   attribute.length = (AttrLength)50;
+   record.push_back(attribute);
+
+   attribute.name = "file-name";
+   attribute.type = TypeVarChar;
+   attribute.length = (AttrLength)50;
+   record.push_back(attribute);
 
    return record;
 }
 
 vector<Attribute> RelationManager::vector_col() {
    vector<Attribute> record;
-   getColumnAttr(record);
+   Attribute attribute;
+
+   attribute.name = "table-id";
+   attribute.type = TypeInt;
+   attribute.length = (AttrLength)4;
+   record.push_back(attribute);
+
+   attribute.name = "column-name";
+   attribute.type = TypeVarChar;
+   attribute.length = (AttrLength)50;
+   record.push_back(attribute);
+
+   attribute.name = "column-type";
+   attribute.type = TypeInt;
+   attribute.length = (AttrLength)4;
+   record.push_back(attribute);
+
+   attribute.name = "column-length";
+   attribute.type = TypeInt;
+   attribute.length = (AttrLength)4;
+   record.push_back(attribute);
+
+   attribute.name = "column-position";
+   attribute.type = TypeInt;
+   attribute.length = (AttrLength)4;
+   record.push_back(attribute);
 
    return record;
 }
@@ -214,53 +255,7 @@ RC RelationManager::deleteTable(const string &tableName)
 
 RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &attrs)
 {
-    if (tableName == "Tables") {
-    	getTableAttr(attrs);
-    	return 0;
-    }
-    if (tableName == "Columns") {
-    	getColumnAttr(attrs);
-    	return 0;
-    }
-
-    RM_ScanIterator rsi, columnRsi;
-    RID rid;
-    void *data = malloc(PAGE_SIZE + 1);
-    data[PAGE_SIZE] = '\0';
-    vector<string> tidAttr, returnAttr;
-    Attribute attr;
-    tidAttr.push_back("table-id");
-    returnAttr.push_back("column-name");
-    returnAttr.push_back("column-type");
-    returnAttr.push_back("column-length");
-
-    if(scan("Tables", "table-name", EQ_OP, &tableName, tidAttr, rsi) != 0) return -1;
-    while(rsi.getNextTuple(rid, data) != RM_EOF) {
-    	int tmp;
-    	memcpy(&tmp, data, sizeof(int));
-    	scan("Columns", "table-id", EQ_OP, &tmp, returnAttr, columnRsi);
-    	while(columnRsi.getNextTuple(rid, data) != RM_EOF) {
-    		int len;
-    		int offset = 0;
-
-    		memcpy(&len, data, sizeof(int));
-    		offset += sizeof(int);
-    		char* charAttrName = (char*)malloc(len + 1);
-    		charAttrName[len] = '\0';
-    		memcpy(charAttrName, data + offset, len);
-    		attr.name = charAttrName;
-    		offset += len;
-
-    		memcpy(&attr.type, data + offset, sizeof(int));
-    		offset += sizeof(int);
-
-    		memcpy(&attr.length, data + offset, sizeof(int));
-
-    		attrs.push_back(attr);
-    	}
-
-    }
-	return 0;
+    return -1;
 }
 
 RC RelationManager::insertTuple(const string &tableName, const void *data, RID &rid)
@@ -300,29 +295,7 @@ RC RelationManager::scan(const string &tableName,
       const vector<string> &attributeNames,
       RM_ScanIterator &rm_ScanIterator)
 {
-	vector<Attribute> attrs;
-	FileHandle fh;
-	RBFM_ScanIterator rbsi = new RBFM_ScanIterator();
-
-	if(_rbfm->openFile(tableName, fh) != 0) return -1;
-
-	switch(tableName) {
-		case "Tables": {
-			getTableAttr(attrs);
-			break;
-		}
-		case "Columns": {
-			getColumnAttr(attrs);
-			break;
-		}
-		default: {
-			if (!getAttributes(tableName, attrs)) return -1;
-			break;
-		}
-	}
-	if(_rbfm->scan(fh, attrs, conditionAttribute, compOp, value, attributeNames, rbsi) != 0) return -1;
-	rm_ScanIterator.set_rmsi(rmsi);
-	return 0;
+	return -1;
 }
 
 // Extra credit work
@@ -335,52 +308,4 @@ RC RelationManager::dropAttribute(const string &tableName, const string &attribu
 RC RelationManager::addAttribute(const string &tableName, const Attribute &attr)
 {
     return -1;
-}
-
-void RelationManager::getTableAttr(vector<Attribute> &attrs) {
-	Attribute attribute;
-
-	attribute.name = "table-id";
-	attribute.type = TypeInt;
-	attribute.length = (AttrLength)4;
-	attrs.push_back(attribute);
-
-	attribute.name = "table-name";
-	attribute.type = TypeVarChar;
-	attribute.length = (AttrLength)50;
-	attrs.push_back(attribute);
-
-	attribute.name = "file-name";
-	attribute.type = TypeVarChar;
-	attribute.length = (AttrLength)50;
-	attrs.push_back(attribute);
-}
-
-void RelationManager::getColumnAttr(vector<Attribute> &attrs) {
-	Attribute attribute;
-
-	attribute.name = "table-id";
-	attribute.type = TypeInt;
-	attribute.length = (AttrLength)4;
-	attrs.push_back(attribute);
-
-	attribute.name = "column-name";
-	attribute.type = TypeVarChar;
-	attribute.length = (AttrLength)50;
-	attrs.push_back(attribute);
-
-	attribute.name = "column-type";
-	attribute.type = TypeInt;
-	attribute.length = (AttrLength)4;
-	attrs.push_back(attribute);
-
-	attribute.name = "column-length";
-	attribute.type = TypeInt;
-	attribute.length = (AttrLength)4;
-	attrs.push_back(attribute);
-
-	attribute.name = "column-position";
-	attribute.type = TypeInt;
-	attribute.length = (AttrLength)4;
-	attrs.push_back(attribute);
 }

@@ -1,539 +1,316 @@
 #include "rbfm.h"
-#include<cmath>
-#include<iostream>
-RecordBasedFileManager* RecordBasedFileManager::_rbf_manager = 0;
-PagedFileManager * RecordBasedFileManager::pfm = PagedFileManager::instance();
+
+RecordBasedFileManager* RecordBasedFileManager::_rbf_manager = NULL;
+PagedFileManager *RecordBasedFileManager::_pf_manager = NULL;
 
 RecordBasedFileManager* RecordBasedFileManager::instance()
 {
     if(!_rbf_manager)
-
-    	_rbf_manager = new RecordBasedFileManager();
+        _rbf_manager = new RecordBasedFileManager();
 
     return _rbf_manager;
 }
 
 RecordBasedFileManager::RecordBasedFileManager()
 {
+    _pf_manager = PagedFileManager::instance();
 }
 
 RecordBasedFileManager::~RecordBasedFileManager()
 {
+    _pf_manager = NULL;
 }
 
 RC RecordBasedFileManager::createFile(const string &fileName) {
-    if(pfm->createFile(fileName) != 0) return -1;
-	return 0;
+    return _pf_manager->createFile(fileName);
 }
 
 RC RecordBasedFileManager::destroyFile(const string &fileName) {
-	if(pfm->destroyFile(fileName) != 0) return -1;
-	return 0;
+    return _pf_manager->destroyFile(fileName);
 }
 
 RC RecordBasedFileManager::openFile(const string &fileName, FileHandle &fileHandle) {
-	if(pfm->openFile(fileName, fileHandle) != 0) return -1;
-	if (fileHandle.getNumberOfPages() == 0) {
-		Page page;
-
-		fileHandle.appendPage(page.buf);
-
-	}
-	return 0;
+    return _pf_manager->openFile(fileName, fileHandle);
 }
 
 RC RecordBasedFileManager::closeFile(FileHandle &fileHandle) {
-    if(pfm->closeFile(fileHandle) != 0) return -1;
-	return 0;
+    return _pf_manager->closeFile(fileHandle);
 }
 
 RC RecordBasedFileManager::insertRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const void *data, RID &rid) {
-	Record record;
-	record.initRecord(recordDescriptor, data);
-	int res = findLoc(record.size, fileHandle);
-	if (res != -1) {
-		rid.pageNum = res;
-		char* temp = (char*)malloc(PAGE_SIZE + 1);
-		temp[PAGE_SIZE] = '\0';
-		fileHandle.readPage(res - 1, temp);
-		int sp, slot_num, headPtr;
-		Slot slot;
-		slot.len = record.size;
-		int offset = PAGE_SIZE-sizeof(int);
-		memcpy(&sp, temp + offset, sizeof(int));
-		sp += record.size;
-		sp += sizeof(slot);
-		memcpy(temp + offset, &sp, sizeof(int));
-		offset -= sizeof(int);
-		memcpy(&slot_num, temp + offset, sizeof(int));
-		rid.slotNum = ++slot_num;
-		memcpy(temp + offset, &slot_num, sizeof(int));
-		offset -= sizeof(int);
-		memcpy(&headPtr, temp + offset, sizeof(int));
-		memcpy(temp + headPtr, record.buffer, slot.len);
-		headPtr += slot.len;
-		memcpy(temp + offset, &headPtr, sizeof(int));
-		offset -= sizeof(slot) * slot_num;
-		slot.offset = headPtr - slot.len;
-		memcpy(temp + offset, &slot.offset, sizeof(int));
-		offset += sizeof(int);
-		memcpy(temp + offset, &slot.len, sizeof(int));
-		fileHandle.writePage(res - 1, temp);
-		free(temp);
-	} else {
-		Page pg;
-		Slot slot;
-		rid.pageNum = fileHandle.getNumberOfPages() + 1;
-		rid.slotNum = 1;
-		int offset = PAGE_SIZE - sizeof(int);
-		int sp, slot_num, headPtr;
-		memcpy(&sp, pg.buf + offset, sizeof(int));
-		sp += record.size;
-		sp += sizeof(slot);
-		memcpy(pg.buf + offset, &sp, sizeof(int));
-		offset -= sizeof(int);
-		slot_num = rid.slotNum;
-		memcpy(pg.buf + offset, &slot_num, sizeof(int));
-		offset -= sizeof(int);
-		memcpy(&headPtr, pg.buf + offset, sizeof(int));
-		slot.len = record.size;
-		memcpy(pg.buf + headPtr, record.buffer, slot.len);
-		slot.offset = headPtr;
-		headPtr += slot.len;
-		memcpy(pg.buf + offset, &headPtr, sizeof(int));
-		offset -= sizeof(slot);
-		memcpy(pg.buf + offset, &slot.offset, sizeof(int));
-		offset += sizeof(int);
-		memcpy(pg.buf + offset, &slot.len, sizeof(int));
-		fileHandle.appendPage(pg.buf);
-	}
-	return 0;
+    char *record = (char*)calloc(PAGE_SIZE, sizeof(char));
+    char *page =   (char*)calloc(PAGE_SIZE, sizeof(char));
+    short int slotNum, page_dir;
+    char first = 1;
+    unsigned short int freeSpace, recordCount, record_length, currPage;
+
+    currPage = (fileHandle.getNumberOfPages() <= 0) ? 0 : fileHandle.getNumberOfPages()-1;
+    for (;currPage < fileHandle.getNumberOfPages();){
+        if (fileHandle.readPage(currPage, page) != 0) {
+            free(page);
+            return -1;
+        }
+        memcpy(&freeSpace,   &page[PAGE_SIZE - 2], sizeof(unsigned short int));
+        memcpy(&recordCount, &page[PAGE_SIZE - 4], sizeof(unsigned short int));
+        currPage = (first) ? currPage+1 : 0;
+    }
+
+    // pages don't have enough space
+    if (currPage == fileHandle.getNumberOfPages()) {
+        memset(page, 0, PAGE_SIZE);
+        freeSpace = 0;
+        recordCount = 0;
+    }
+
+    // append to dir
+    recordCount++;
+    rid.slotNum = recordCount;
+    rid.pageNum = currPage;
+
+    // overwrite slotNum and Count
+    int i=0;
+    while(i < recordCount-1){
+        const short int delNum = 0x8000;
+        memcpy(&slotNum, &page[PAGE_SIZE-4-(4*i)], sizeof(short int));
+        if (slotNum == delNum) {
+            rid.slotNum = i;
+            recordCount=recordCount-1;
+            break;
+        }
+        i++;
+    }
+
+    // write record in page dir
+    page_dir = PAGE_SIZE - (4 * rid.slotNum + 4);
+    record_length = makeRecord(recordDescriptor, data, record);
+    memcpy(page + freeSpace,    record,         record_length);
+    memcpy(page + page_dir    , &freeSpace,     sizeof(unsigned short int));
+    memcpy(page + page_dir+2,   &record_length, sizeof(unsigned short int));
+    freeSpace += record_length;
+    memcpy(page + PAGE_SIZE - 4, &recordCount, sizeof(unsigned short int));
+    memcpy(page + PAGE_SIZE - 2, &freeSpace,   sizeof(unsigned short int));
+
+    int append_rc = (currPage==fileHandle.getNumberOfPages()) ? fileHandle.appendPage(page) : fileHandle.writePage(currPage, page);
+    if (append_rc != 0) {
+        free(record);
+        free(page);
+        return -1;
+    }
+
+    free(record);
+    free(page);
+    return 0;
 }
 
 RC RecordBasedFileManager::readRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, void *data) {
-	Page pg;
-    fileHandle.readPage(rid.pageNum - 1, pg.buf);
-    int offset = PAGE_SIZE-sizeof(int);
-    memcpy(&pg.free_sp, pg.buf + offset, sizeof(int));
-    offset -= sizeof(int);
-    memcpy(&pg.snum, pg.buf + offset, sizeof(int));
-    offset -= sizeof(int);
-    memcpy(&pg.headPtr, pg.buf + offset, sizeof(int));
-    offset -= rid.slotNum * sizeof(Slot);
-    int rlen, roffset;
-    memcpy(&roffset, pg.buf + offset, sizeof(int));
-    offset += sizeof(int);
-    memcpy(&rlen, pg.buf + offset, sizeof(int));
-    int localSlotNum, localOffset;
-    localOffset = roffset;
-    while(true) {
-		if(localOffset >= PAGE_SIZE || localOffset < 0) {
-			int num = localOffset / PAGE_SIZE;
-			fileHandle.readPage(rid.pageNum - 1 + num, pg.buf);
-			localSlotNum = localOffset % PAGE_SIZE;
-			if(localSlotNum < 0) localSlotNum += PAGE_SIZE;
-			memcpy(&localOffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - localSlotNum * sizeof(Slot), sizeof(int));
-		} else {
-			break;
-		}
+
+    char *page = (char*) calloc(PAGE_SIZE, sizeof(char));
+    short int record;
+    unsigned short int fieldCount, pageNum, count;
+    unsigned short int curr_offset, prev_offset;
+    unsigned short int i=0;
+
+    if(fileHandle.readPage(rid.pageNum, page) != 0) {
+        free(page);
+        return -1;
     }
-    memcpy(data, pg.buf + localOffset, rlen);
-    memset(data + rlen, '\0', 1);
-	return 0;
+    memcpy(&count, &page[PAGE_SIZE - 4], sizeof(unsigned short int));
+    memcpy(&record, &page[PAGE_SIZE - 4 - (4 * rid.slotNum)], sizeof(short int));
+    memcpy(&fieldCount, &page[record], sizeof(short int));
+
+    if(rid.slotNum > count) {
+        free(page);
+        return -1;
+    }
+    if (fieldCount != recordDescriptor.size()) {
+        free(page);
+        return -1;
+    }
+    if (record < 0) {
+        memcpy(&pageNum,  &page[PAGE_SIZE - 2 - (4 * rid.slotNum)], sizeof(unsigned short int));
+
+        RID new_rid;
+        new_rid.pageNum = pageNum;
+        new_rid.slotNum = (-1)*record;
+
+        free(page);
+
+        return readRecord(fileHandle, recordDescriptor, new_rid, data);
+    }
+
+    memcpy(data, &page[record + sizeof(unsigned short int)], (unsigned short int)ceil(fieldCount / 8.0));
+    curr_offset = prev_offset = sizeof(unsigned short int) + (unsigned short int)ceil(fieldCount / 8.0) + fieldCount * sizeof(unsigned short int);
+    char *data_c = (char*)data + (unsigned short int)ceil(fieldCount / 8.0);
+
+    // convert page format to [vector + data] format
+    while (i < fieldCount){
+    	if (!(*((char*)data + (char)(i/8)) & (1<<(7-i%8)))) {
+        	memcpy(&curr_offset, &page[record + sizeof(unsigned short int) + (unsigned short int)ceil(fieldCount / 8.0) + i * sizeof(uint16_t)], sizeof(uint16_t));
+            if (recordDescriptor[i].type != TypeVarChar){
+            	memcpy(&data_c[0], &page[record + prev_offset], sizeof(int));
+            	data_c += sizeof(int);
+            }
+            else{
+            	int attlen = curr_offset - prev_offset;
+            	memcpy(&data_c[0], &attlen, sizeof(int));
+                memcpy(&data_c[4], &page[record + prev_offset], attlen);
+                data_c += (4 + attlen);
+            }
+        }
+    	prev_offset = curr_offset;
+    	i++;
+    }
+
+    free(page);
+    return 0;
 }
 
 RC RecordBasedFileManager::printRecord(const vector<Attribute> &recordDescriptor, const void *data) {
-    int offset = 0;
-    int null_byte = ceil(1.0 * recordDescriptor.size() / 8);
-    unsigned char* null_indicator = (unsigned char*)malloc(null_byte);
-    memcpy(null_indicator,data,null_byte);
-    offset = null_byte;
-    int null_byte_num;
-    int null_bit_num;
-    bool flag = false;
-    for (int i = 0; i < recordDescriptor.size(); i++) {
-    	null_byte_num = i / 8;
-    	null_bit_num = i % 8;
-    	flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
-    	flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
-    	if (flag) {
-    		cout << recordDescriptor[i].name << ":" << "NULL" << endl;
-    	} else {
-    		switch(recordDescriptor[i].type) {
-    		case TypeInt:
-    			{
-    				int value;
-    				memcpy(&value,(char*)data + offset,recordDescriptor[i].length);
-    				offset += recordDescriptor[i].length;
-    				cout << recordDescriptor[i].name << ":" << value << endl;
-    				break;
-    			}
-    		case TypeReal:
-    			{
-    				float value;
-    				memcpy(&value,(char*)data + offset,recordDescriptor[i].length);
-    				offset += recordDescriptor[i].length;
-    				cout << recordDescriptor[i].name << ":" << value << endl;
-    				break;
-    			}
-    		case TypeVarChar:
-    			{
-    				int len;
-    				memcpy(&len,(char*)data + offset, 4 * sizeof(char));
-    				offset += 4 * sizeof(char);
-    				char * vc = (char*)malloc(len + 1);
-    				vc[len] = '\0';
-    				memcpy(vc, (char*)data + offset, len);
-    				offset += len;
-    				cout << recordDescriptor[i].name << ":" << vc << endl;
-    				free(vc);
-    				break;
-    			}
-    		}
-    	}
+
+    unsigned short int offset = (unsigned short int)ceil(recordDescriptor.size()/8.0);
+    const char* dataArray = (char*)data;
+    int int_num, char_len, i=0;
+    float real_num;
+
+    while(i < recordDescriptor.size()){
+        if (!(*(dataArray + (char)(i/8)) & (1<<(7-i%8)))) {
+            if (recordDescriptor[i].type == TypeInt) {
+                memcpy(&int_num, &dataArray[offset], sizeof(int));
+                cout << recordDescriptor[i].name << ": " << int_num << endl;
+                offset += sizeof(int);
+            }
+        else if (recordDescriptor[i].type == TypeReal) {
+            memcpy(&real_num, &dataArray[offset], sizeof(float));
+            cout << recordDescriptor[i].name << ": " << real_num << endl;
+            offset += sizeof(float);
+        }
+        else if (recordDescriptor[i].type == TypeVarChar) {
+            memcpy(&char_len, &dataArray[offset], sizeof(int));
+            char content[char_len + 1];
+            memcpy(content, &dataArray[offset + sizeof(int)], char_len );
+            content[char_len] = 0;
+            cout << recordDescriptor[i].name << ": " << content << endl;
+            offset += (4 + char_len);
+        }
     }
-    free(null_indicator);
-	return 0;
+        else cout << recordDescriptor[i].name << ": NULL" << endl;
+        i++;
+    }
+    return 0;
 }
-RC RecordBasedFileManager::deleteRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid) {
-	Page pg;
-	fileHandle.readPage(rid.pageNum - 1, pg.buf);
-	int offset = PAGE_SIZE-sizeof(int);
-	memcpy(&pg.free_sp, pg.buf + offset, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(&pg.snum, pg.buf + offset, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(&pg.headPtr, pg.buf + offset, sizeof(int));
-	offset -= rid.slotNum * sizeof(Slot);
-	int rlen, roffset;
-	int invalidNum = -1;
-	memcpy(&roffset, pg.buf + offset, sizeof(int));
-	memcpy(pg.buf + offset, &invalidNum, sizeof(int));
-	offset += sizeof(int);
-	memcpy(&rlen, pg.buf + offset, sizeof(int));
-	if(roffset < 0 || roffset > PAGE_SIZE) {
-		rlen = 0;
-		memcpy(pg.buf + offset, &rlen, sizeof(int));
-		fileHandle.writePage(rid.pageNum - 1, pg.buf);
-		RID newRid;
-		newRid.slotNum = roffset % PAGE_SIZE;
-		newRid.pageNum = roffset / PAGE_SIZE + rid.pageNum;
-		deleteRecord(fileHandle, recordDescriptor, newRid);
-		return 0;
+
+RC RecordBasedFileManager::deleteRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid){
+	char *page = (char*) calloc(PAGE_SIZE, sizeof(char));
+
+	unsigned short int record_count, free_space, pageNum, record_length;
+	short int record_offset, i_record_offset;
+    const short int delOffset = 0x8000;
+    RID new_rid;
+
+	fileHandle.readPage(rid.pageNum, page);
+	if(fileHandle.readPage(rid.pageNum, page) != 0) {
+		free(page);
+		return -1;
 	}
-	pg.free_sp -= rlen;
-	memcpy(pg.buf + PAGE_SIZE - sizeof(int), &pg.free_sp, sizeof(int));
+	memcpy(&record_offset, &page[PAGE_SIZE - 4 - (4 * rid.slotNum)], sizeof(short int));
+	memcpy(&record_count,  &page[PAGE_SIZE - 4],                     sizeof(unsigned short int));
+    memcpy(&free_space,    &page[PAGE_SIZE - 2],                     sizeof(unsigned short int));
 
-	char* tmp = (char*)malloc(pg.headPtr - roffset - rlen + 1);
-	tmp[pg.headPtr - roffset - rlen] = '\0';
-	memcpy(tmp, pg.buf + roffset + rlen, pg.headPtr - roffset - rlen);
-	memcpy(pg.buf + roffset, tmp, pg.headPtr - roffset - rlen);
-//	memmove(pg.buf + roffset, pg.buf + roffset + rlen, pg.headPtr - roffset - rlen);
-	memset(pg.buf + pg.headPtr - rlen, 0, rlen);
-	pg.headPtr -= rlen;
-	memcpy(pg.buf + PAGE_SIZE - 3 * sizeof(int), &pg.headPtr, sizeof(int));
-	int temp = 0;
-	memcpy(pg.buf + offset, &temp, sizeof(int));
-	offset = PAGE_SIZE - 3 * sizeof(int);
-	for(int i = 0; i < pg.snum; i++) {
-		offset -= sizeof(Slot);
-		memcpy(&temp, pg.buf + offset, sizeof(int));
-		if(temp > roffset && temp > 0 && temp < PAGE_SIZE) temp -= rlen;
-		memcpy(pg.buf + offset, &temp, sizeof(int));
-	}
+    if(rid.slotNum > record_count) {
+     	free(page);
+     	return -1;
+     }
 
-	fileHandle.writePage(rid.pageNum - 1, pg.buf);
-	free(tmp);
-	return 0;
+    if (record_offset < 0) {
+
+        memcpy(&pageNum,  &page[PAGE_SIZE - 2 - (4 * rid.slotNum)], sizeof(unsigned short int));
+        new_rid.pageNum = pageNum;
+        new_rid.slotNum = record_offset * (-1);
+
+        // delete record from page then overwrite page directory
+        deleteRecord(fileHandle, recordDescriptor, new_rid);
+       const short int delNum=0x8000;
+        memcpy(&page[PAGE_SIZE - 4 - (4 * rid.slotNum)], &delNum, sizeof(short int));
+        fileHandle.writePage(rid.pageNum, page);
+
+        free(page);
+        return 0;
+    }
+    // remove target record then update page dir
+    memcpy(&record_length,        &page[PAGE_SIZE - 2 - (4 * rid.slotNum)], sizeof(unsigned short int));
+    memmove(&page[record_offset], &page[record_offset + record_length],     free_space - record_length - record_offset);
+    memcpy(&page[PAGE_SIZE - 2],  &free_space-record_length,                sizeof(unsigned short int));
+
+    for (int i = 1; i <= record_count; i++) {
+        memcpy(&i_record_offset, &page[PAGE_SIZE - 4 - (4 * i)], sizeof(short int));
+        if (i_record_offset > record_offset) {
+            memcpy(&page[PAGE_SIZE - 4 - (4 * i)], &i_record_offset - record_length, sizeof(unsigned short int));
+        }
+    }
+
+
+
+    memcpy(&page[PAGE_SIZE - 4 - (4 * rid.slotNum)], &delOffset, sizeof(short int));
+    fileHandle.writePage(rid.pageNum, page);
+    free(page);
+    return 0;
 }
 
-RC RecordBasedFileManager:: updateRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const void *data, const RID &rid) {
-	Page pg;
-	int rlen, roffset, offset;
-	Record r;
-	r.initRecord(recordDescriptor, data);
-	getPageAndSlotDetails(fileHandle, pg, rid, rlen, roffset, offset);
-	if(r.size <= rlen) {
-		int num = 0;
-		RID newRid;
-//		bool flag = true;
-		int tempSN = rid.slotNum;
-		int tempPN = rid.pageNum;
-		newRid.pageNum = tempPN;
-		newRid.slotNum = tempSN;
-		while(true) {
-			if (roffset >= PAGE_SIZE || roffset < 0) {
-				memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
-				fileHandle.writePage(tempPN - 1, pg.buf);
-				num += roffset / PAGE_SIZE;
-				newRid.slotNum = roffset % PAGE_SIZE;
-				newRid.pageNum = roffset / PAGE_SIZE + tempPN;
-				tempSN = newRid.slotNum;
-				tempPN = newRid.pageNum;
-				fileHandle.readPage(newRid.pageNum - 1, pg.buf);
-//				getPageInfo(fileHandle, pg, rid.pageNum - 1 + num, offset);
-//				memcpy(pg.buf + offset - roffset % PAGE_SIZE * sizeof(Slot) + sizeof(int), &r.size, sizeof(int));
-				memcpy(&roffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - roffset % PAGE_SIZE * sizeof(Slot), sizeof(int));
-			} else break;
-		}
-		getPageInfo(fileHandle, pg, rid.pageNum - 1 + num, offset);
-		memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &r.size, sizeof(int));
+//helper function
+unsigned short int RecordBasedFileManager::packRecord(const vector<Attribute> &recordDescriptor, const void *data, char *record) {
 
-		int diff = rlen - r.size;
-		pg.free_sp -= diff;
-		memcpy(pg.buf + PAGE_SIZE - sizeof(int), &pg.free_sp, sizeof(int));
+    //creates a record in page formated from [vector+data], return record size at the end
 
-		memcpy(pg.buf + roffset, r.buffer, r.size);
-		memmove(pg.buf + roffset + r.size, pg.buf + roffset + rlen, pg.headPtr - roffset - rlen);
-		memset(pg.buf + pg.headPtr - diff, 0, diff);
+    const char* dataArray = (char*)data;
+    int attlen, i=0;
+    unsigned short int count, in_offset, dir_offset, recordOffset;
 
-		pg.headPtr -= diff;
-		memcpy(pg.buf + PAGE_SIZE - 3 * sizeof(int), &pg.headPtr, sizeof(int));
+    count = (unsigned short int)recordDescriptor.size();
+    memcpy(record, &count, sizeof(unsigned short int));
 
+    in_offset = (unsigned short int)ceil(count/8.0);
+    memcpy(record + sizeof(uint16_t), &dataArray[0], in_offset);
 
-		int temp = 0;
-		offset = PAGE_SIZE - 3 * sizeof(int);
-		for(int i = 0; i < pg.snum; i++) {
-			offset -= sizeof(Slot);
-			memcpy(&temp, pg.buf + offset, sizeof(int));
-			if(temp > roffset && temp > 0 && temp < PAGE_SIZE) temp -= diff;
-			memcpy(pg.buf + offset, &temp, sizeof(int));
-		}
-		fileHandle.writePage(rid.pageNum - 1 + num, pg.buf);
-	} else {
-		int num = 0;
-		RID newRid;
-//		bool flag = true;
-		int tempSN = rid.slotNum;
-		int tempPN = rid.pageNum;
-		newRid.pageNum = tempPN;
-		newRid.slotNum = tempSN;
-		while(true) {
-			if (roffset >= PAGE_SIZE || roffset < 0) {
-				memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
-				fileHandle.writePage(tempPN - 1, pg.buf);
-				num += roffset / PAGE_SIZE;
-				newRid.slotNum = roffset % PAGE_SIZE;
-				newRid.pageNum = roffset / PAGE_SIZE + tempPN;
-				fileHandle.readPage(newRid.pageNum - 1, pg.buf);
-				memcpy(&roffset, pg.buf + PAGE_SIZE - 3 * sizeof(int) - roffset % PAGE_SIZE * sizeof(Slot), sizeof(int));
-				tempSN = newRid.slotNum;
-				tempPN = newRid.pageNum;
-			} else break;
-		}
-		deleteRecord(fileHandle, recordDescriptor, newRid);
-		memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * tempSN + sizeof(int), &r.size, sizeof(int));
-		getPageInfo(fileHandle, pg, rid.pageNum - 1 + num, offset);
+    dir_offset = sizeof(unsigned short int) + in_offset;
+    recordOffset = sizeof(unsigned short int) * count + dir_offset;
 
+    while(i<count){
+       if (!(*(dataArray + (char)(i/8)) & (1<<(7-i%8)))) {
 
-//		memcpy(pg.buf + PAGE_SIZE - 12 - sizeof(Slot) * rid.slotNum, &roffset, sizeof(int));
-//		fileHandle.writePage(rid.pageNum - 1, pg.buf);
-
-//		getPageAndSlotDetails(fileHandle, pg, rid, rlen, roffset, offset);
-		if (PAGE_SIZE - pg.free_sp >= r.size) {
-			memcpy(pg.buf + pg.headPtr, r.buffer, r.size);
-			rlen = r.size;
-			pg.free_sp += rlen;
-			roffset = pg.headPtr;
-			pg.headPtr += rlen;
-			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &rlen, sizeof(int));
-//			offset -= sizeof(int);
-			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot), &roffset, sizeof(int));
-			memcpy(pg.buf + PAGE_SIZE - 3 * sizeof(int), &pg.headPtr, sizeof(int));
-			memcpy(pg.buf + PAGE_SIZE - sizeof(int), &pg.free_sp, sizeof(int));
-			fileHandle.writePage(rid.pageNum - 1 + num, pg.buf);
-		} else {
-			RID newRid2;
-			insertRecord(fileHandle, recordDescriptor, r.buffer, newRid2);
-//			char* tmp = (char*)malloc(PAGE_SIZE + 1);
-//			tmp[PAGE_SIZE] = '\0';
-//			fileHandle.readPage(newRid.pageNum - 1, tmp);
-			int localSlot;
-//			memcpy(&localSlot, tmp + PAGE_SIZE - 3 * sizeof(int) - newRid.slotNum * sizeof(Slot), sizeof(int));
-			localSlot = newRid2.slotNum;
-			roffset = (newRid2.pageNum - rid.pageNum) * PAGE_SIZE + localSlot;
-			rlen = r.size;
-			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot) + sizeof(int), &rlen, sizeof(int));
-			offset -= sizeof(int);
-			memcpy(pg.buf + 4084 - newRid.slotNum * sizeof(Slot), &roffset, sizeof(int));
-			fileHandle.writePage(rid.pageNum - 1 + num, pg.buf);
-//			free(tmp);
-		}
-	}
-
-	return 0;
-}
-
-RC RecordBasedFileManager::readAttribute(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, const string &attributeName, void *data) {
-	Page pg;
-	int offset, rlen, roffset;
-	getPageAndSlotDetails(fileHandle, pg, rid, rlen, roffset, offset);
-
-	char* r = (char*)malloc(rlen + 1);
-	r[rlen] = '\0';
-
-	memcpy(r, pg.buf + roffset, rlen);
-
-	offset = 0;
-	int null_byte = ceil(1.0 * recordDescriptor.size() / 8);
-	unsigned char* null_indicator = (unsigned char*)malloc(null_byte);
-	memcpy(null_indicator,r,null_byte);
-	offset = null_byte;
-	int null_byte_num;
-	int null_bit_num;
-	bool flag = false;
-	for (int i = 0; i < recordDescriptor.size(); i++) {
-		null_byte_num = i / 8;
-	    null_bit_num = i % 8;
-	    flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
-	    flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
-	    if (flag) {
-	    	if(recordDescriptor[i].name == attributeName) data = NULL;
-	    } else {
-	    	if(recordDescriptor[i].type == TypeVarChar) {
-	    		int len;
-	    		memcpy(&len,r + offset, 4 * sizeof(char));
-	    		offset += 4 * sizeof(char);
-	    		if(recordDescriptor[i].name == attributeName) {
-	    			memcpy(data, r + offset, len);
-	    			break;
-	    		}
-	    		offset += len;
-	    	}
-	    	else if(recordDescriptor[i].name == attributeName) {
-	    		memcpy(data, r + offset, recordDescriptor[i].length);
-	    		break;
-	    	} else offset += recordDescriptor[i].length;
-
-	    }
-	}
-	return 0;
-}
-
-
-RC RecordBasedFileManager::findLoc(int size, FileHandle & fh) {
-	int curr = fh.getNumberOfPages();
-	int sp;
-	char* temp = (char*)malloc(PAGE_SIZE + 1);
-	temp[PAGE_SIZE] = '\0';
-	if(fh.readPage(curr - 1, temp) == 0) {
-		memcpy(&sp, temp + PAGE_SIZE - sizeof(int), sizeof(int));
-		if(PAGE_SIZE - sp >= size + sizeof(Slot)) {
-			free(temp);
-			return curr;
-		}
-		else {
-			for(int i = 1; i < curr; i++) {
-				if(fh.readPage(i - 1, temp) == 0) {
-					memcpy(&sp, temp + PAGE_SIZE - sizeof(int), sizeof(int));
-					if(PAGE_SIZE - sp >= size + sizeof(Slot)) {
-						free(temp);
-						return i;
-					}
-				}
-			}
-		}
-	}
-	free(temp);
-	return -1;
-}
-
-
-void RecordBasedFileManager::getPageInfo(FileHandle &fileHandle, Page &pg, PageNum num, int &offset) {
-	fileHandle.readPage(num, pg.buf);
-	offset = PAGE_SIZE-sizeof(int);
-	memcpy(&pg.free_sp, pg.buf + offset, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(&pg.snum, pg.buf + offset, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(&pg.headPtr, pg.buf + offset, sizeof(int));
-	if (pg.headPtr != pg.free_sp - pg.snum * 8 - 12) pg.headPtr = pg.free_sp - pg.snum * 8 - 12;
-}
-
-
-void RecordBasedFileManager::getPageAndSlotDetails(FileHandle &fileHandle, Page &pg, RID rid, int &rlen, int &roffset, int &offset) {
-//	fileHandle.readPage(rid.pageNum - 1, pg.buf);
-	int num = rid.pageNum - 1;
-	getPageInfo(fileHandle, pg, num, offset);
-	offset -= rid.slotNum * sizeof(Slot);
-	memcpy(&roffset, pg.buf + offset, sizeof(int));
-	offset += sizeof(int);
-	memcpy(&rlen, pg.buf + offset, sizeof(int));
-}
-
-Page::Page() {
-	headPtr = 0;
-	snum = 0;
-	free_sp = 3 * sizeof(int);
-	buf = (char*) malloc(PAGE_SIZE + 1);
-	buf[PAGE_SIZE] = '\0';
-	int offset = PAGE_SIZE - sizeof(int);
-	memcpy(buf + offset, &free_sp, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(buf + offset, &snum, sizeof(int));
-	offset -= sizeof(int);
-	memcpy(buf + offset, &headPtr, sizeof(int));
-	memset(buf, 0, offset);
-	}
-Page::~Page() {
-	free(buf);
-	}
-
-Record::Record() {
-	size = 0;
-}
-Record::~Record() {
-	free(buffer);
-}
-
-void Record::initRecord(const vector<Attribute> &recordDescriptor, const void *data) {
-	char* buf = (char*)malloc(PAGE_SIZE + 1);
-	buf[PAGE_SIZE] = '\0';
-	record_descriptor = recordDescriptor;
-	null_byte = ceil(1.0 * record_descriptor.size() / 8);
-	null_indicator = (unsigned char *)malloc(null_byte);
-	memcpy(null_indicator, data, null_byte);
-	int null_byte_num = 0;
-	int null_bit_num = 0;
-	bool flag = false;
-	int offset = 0;
-	memcpy((char *)buf + offset, null_indicator, null_byte);
-	offset += null_byte;
-	for (int i = 0; i < record_descriptor.size(); i++) {
-		null_byte_num = i / 8;
-		null_bit_num = i % 8;
-		flag = null_indicator[null_byte_num] & (1 << (7-null_bit_num));
-		if(!flag) {
-			switch(record_descriptor[i].type) {
-			case TypeInt:
-			{
-				memcpy(buf + offset,(char*)data+offset,recordDescriptor[i].length);
-				offset += recordDescriptor[i].length;
-				break;
-			}
-			case TypeReal:
-			{
-				memcpy(buf + offset,(char*)data+offset,recordDescriptor[i].length);
-				offset += recordDescriptor[i].length;
-				break;
-			}
-			case TypeVarChar:
-			{
-				int temp;
-				memcpy(buf + offset,(char*)data+offset,sizeof(int));
-				memcpy(&temp,(char*)data+offset,sizeof(int));
-				offset += sizeof(int);
-				memcpy(buf + offset, (char*)data + offset, temp);
-				offset += temp;
-				break;
-			}
-			}
-		}
-	}
-	size = null_byte + offset;
-	buffer = (char*)malloc(size + 1);
-	buffer[size] = '\0';
-	memcpy(buffer, buf, size);
-	free(null_indicator);
-	free(buf);
+            if (recordDescriptor[i].type == TypeInt) {
+                char* new_record = record+recordOffset;
+                memcpy(new_record, &dataArray[in_offset], sizeof(int));
+                in_offset += sizeof(int);
+                recordOffset += sizeof(int);
+                new_record=record+dir_offset;
+                memcpy(new_record, &recordOffset, sizeof(unsigned short int));
+            }
+            else if (recordDescriptor[i].type == TypeReal) {
+                char* new_record;
+                new_record=record + recordOffset;
+                memcpy(record + recordOffset, &dataArray[in_offset], sizeof(float));
+                in_offset += sizeof(float);
+                recordOffset += sizeof(float);
+                new_record=record+dir_offset;
+                memcpy(new_record, &recordOffset, sizeof(unsigned short int));
+            }
+            else if (recordDescriptor[i].type == TypeVarChar) {
+                char* new_record;
+                memcpy(&attlen,              &dataArray[in_offset],     sizeof(int));
+                new_record=record + recordOffset;
+                memcpy(new_record, &dataArray[in_offset + 4], attlen);
+                recordOffset += attlen;
+                in_offset += (4 + attlen);
+                new_record=record + dir_offset;
+                memcpy(new_record, &recordOffset, sizeof(unsigned short int));
+            }
+        }
+        else {
+            char* new_record = record+dir_offset;
+            memcpy(new_record, &recordOffset, sizeof(unsigned short int));
+        }
+        dir_offset += sizeof(unsigned short int);
+        i++;
+    }
+    return recordOffset;
 }

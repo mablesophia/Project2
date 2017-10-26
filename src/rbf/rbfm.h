@@ -4,6 +4,10 @@
 #include <string>
 #include <vector>
 #include <climits>
+#include <iostream>
+#include <cstring>
+#include <unordered_set>
+#include <cmath>
 
 #include "../rbf/pfm.h"
 
@@ -28,19 +32,32 @@ struct Attribute {
     AttrLength length; // attribute length
 };
 
+typedef struct
+{
+  uint16_t offset;
+  uint16_t length;
+} SlotDirectory;
+
+typedef struct
+{
+  int freeSpacePointer;
+  int slotTotal;
+} SlotHeader;
+
 // Comparison Operator (NOT needed for part 1 of the project)
-typedef enum { EQ_OP = 0, // no condition// = 
-           LT_OP,      // <
-           LE_OP,      // <=
-           GT_OP,      // >
-           GE_OP,      // >=
-           NE_OP,      // !=
-           NO_OP       // no condition
+typedef enum {
+    EQ_OP = 0, // no condition// =
+    LT_OP,      // <
+    LE_OP,      // <=
+    GT_OP,      // >
+    GE_OP,      // >=
+    NE_OP,      // !=
+    NO_OP       // no condition
 } CompOp;
 
 
 /********************************************************************************
-The scan iterator is NOT required to be implemented for the part 1 of the project 
+The scan iterator is NOT required to be implemented for the part 1 of the project
 ********************************************************************************/
 
 # define RBFM_EOF (-1)  // end of a scan operator
@@ -56,28 +73,28 @@ The scan iterator is NOT required to be implemented for the part 1 of the projec
 
 class RBFM_ScanIterator {
 public:
-  RBFM_ScanIterator() {};
+  RBFM_ScanIterator() { };
   ~RBFM_ScanIterator() {};
 
-  // Never keep the results in the memory. When getNextRecord() is called, 
+  // Never keep the results in the memory. When getNextRecord() is called,
   // a satisfying record needs to be fetched from the file.
   // "data" follows the same format as RecordBasedFileManager::insertRecord().
-  RC getNextRecord(RID &rid, void *data) { return RBFM_EOF; };
-  RC close() { return -1; };
+  RC getNextRecord(RID &rid, void *data);
+  RC close();
 };
 
-class Page;
+
 class RecordBasedFileManager
 {
 public:
   static RecordBasedFileManager* instance();
 
   RC createFile(const string &fileName);
-  
+
   RC destroyFile(const string &fileName);
-  
+
   RC openFile(const string &fileName, FileHandle &fileHandle);
-  
+
   RC closeFile(FileHandle &fileHandle);
 
   //  Format of the data passed into the function is the following:
@@ -87,7 +104,7 @@ public:
   //     Each bit represents whether each field value is null or not.
   //     If k-th bit from the left is set to 1, k-th field value is null. We do not include anything in the actual data part.
   //     If k-th bit from the left is set to 0, k-th field contains non-null values.
-  //     If there are more than 8 fields, then you need to find the corresponding byte first, 
+  //     If there are more than 8 fields, then you need to find the corresponding byte first,
   //     then find a corresponding bit inside that byte.
   //  2) Actual data is a concatenation of values of the attributes.
   //  3) For Int and Real: use 4 bytes to store the value;
@@ -97,8 +114,8 @@ public:
   RC insertRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const void *data, RID &rid);
 
   RC readRecord(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, void *data);
-  
-  // This method will be mainly used for debugging/testing. 
+
+  // This method will be mainly used for debugging/testing.
   // The format is as follows:
   // field1-name: field1-value  field2-name: field2-value ... \n
   // (e.g., age: 24  height: 6.1  salary: 9000
@@ -115,7 +132,7 @@ IMPORTANT, PLEASE READ: All methods below this comment (other than the construct
 
   RC readAttribute(FileHandle &fileHandle, const vector<Attribute> &recordDescriptor, const RID &rid, const string &attributeName, void *data);
 
-  // Scan returns an iterator to allow the caller to go through the results one by one. 
+  // Scan returns an iterator to allow the caller to go through the results one by one.
   RC scan(FileHandle &fileHandle,
       const vector<Attribute> &recordDescriptor,
       const string &conditionAttribute,
@@ -124,53 +141,16 @@ IMPORTANT, PLEASE READ: All methods below this comment (other than the construct
       const vector<string> &attributeNames, // a list of projected attributes
       RBFM_ScanIterator &rbfm_ScanIterator);
 
-public:
-
 protected:
-  RecordBasedFileManager();
   ~RecordBasedFileManager();
+  RecordBasedFileManager();
 
 private:
   static RecordBasedFileManager *_rbf_manager;
-  static PagedFileManager * pfm;
-  RC findLoc(int a, FileHandle &fileHandle);
-  void getPageInfo(FileHandle &fileHandle, Page &pg, PageNum num, int &offset);
-  void getAnotherPageAndRecordDetails(FileHandle &fileHandle, Page &pg, PageNum num, int &rlen, int &roffset, int &offset);
-  void getPageAndSlotDetails(FileHandle &fileHandle, Page &pg, RID rid, int &rlen, int &roffset, int &offset);
+  static PagedFileManager *_pf_manager;
+
+  unsigned short int packRecord(const vector<Attribute> &recordDescriptor, const void *data, char *record);
+
 };
 
-struct Slot {
-	int offset;
-	unsigned len;
-};
-
-class Page {
-public:
-	Page();
-	~Page();
-	int headPtr;
-	int free_sp;
-	unsigned snum;
-	vector<Slot> slots;
-	char * buf;
-};
-
-
-
-typedef enum {INT, REAL, VARCHAR} Type;
-
-
-
-class Record {
-public:
-	Record();
-	~Record();
-	void initRecord(const vector<Attribute> &recordDescriptor, const void *data);
-	unsigned char * null_indicator;
-	int null_byte;
-	vector<Attribute> record_descriptor;
-	char * buffer;
-	RID rid;
-	int size;
-};
 #endif

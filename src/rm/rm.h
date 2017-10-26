@@ -15,12 +15,21 @@ using namespace std;
 // RM_ScanIterator is an iteratr to go through tuples
 class RM_ScanIterator {
 public:
-  RM_ScanIterator() {};
-  ~RM_ScanIterator() {};
+  RM_ScanIterator() { rbsi = new RBFM_ScanIterator();};
+  ~RM_ScanIterator() {close();};
 
   // "data" follows the same format as RelationManager::insertTuple()
-  RC getNextTuple(RID &rid, void *data) { return RM_EOF; };
-  RC close() { return -1; };
+  RC getNextTuple(RID &rid, void *data) {
+	  return rbsi->getNextRecord(rid, data);
+  };
+  RC close() {
+	  return rbsi->close();
+  };
+  void set_rbsi(RBFM_ScanIterator* rbsi) {
+	this->rbsi = rbsi;
+  };
+private:
+  RBFM_ScanIterator *rbsi;
 };
 
 
@@ -80,12 +89,14 @@ private:
 
   vector<Attribute> vector_col();
   vector<Attribute> vector_table();
+
   void getTableAttr(vector<Attribute> &attrs);
   void getColumnAttr(vector<Attribute> &attrs);
 
   RC insert_table(FileHandle &fh, const int tableId, const string name, const string ending);
   RC insert_col(FileHandle &fh, const int tableId, const string name, const int colType, const int colLength, const int colPos);
 
+  RC getTidByTname(const string &tableName, int & tid);
 };
 
 #endif

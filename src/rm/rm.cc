@@ -223,64 +223,93 @@ RC RelationManager::getAttributes(const string &tableName, vector<Attribute> &at
     	return 0;
     }
 
-    RM_ScanIterator rsi, columnRsi;
+    RM_ScanIterator columnRsi;
     RID rid;
     void *data = malloc(PAGE_SIZE + 1);
     data[PAGE_SIZE] = '\0';
-    vector<string> tidAttr, returnAttr;
+    vector<string> returnAttr;
     Attribute attr;
-    tidAttr.push_back("table-id");
+    int tid;
     returnAttr.push_back("column-name");
     returnAttr.push_back("column-type");
     returnAttr.push_back("column-length");
 
-    if(scan("Tables", "table-name", EQ_OP, &tableName, tidAttr, rsi) != 0) return -1;
-    while(rsi.getNextTuple(rid, data) != RM_EOF) {
-    	int tmp;
-    	memcpy(&tmp, data, sizeof(int));
-    	scan("Columns", "table-id", EQ_OP, &tmp, returnAttr, columnRsi);
-    	while(columnRsi.getNextTuple(rid, data) != RM_EOF) {
-    		int len;
-    		int offset = 0;
+    if(getTidByTname(tableName, tid) != 0) return -1;
+    if(scan("Columns", "table-id", EQ_OP, &tid, returnAttr, columnRsi) != 0) return -1;
+    while(columnRsi.getNextTuple(rid, data) != RM_EOF) {
+    	int len;
+    	int offset = 0;
 
-    		memcpy(&len, data, sizeof(int));
-    		offset += sizeof(int);
-    		char* charAttrName = (char*)malloc(len + 1);
-    		charAttrName[len] = '\0';
-    		memcpy(charAttrName, data + offset, len);
-    		attr.name = charAttrName;
-    		offset += len;
+    	memcpy(&len, data, sizeof(int));
+    	offset += sizeof(int);
+    	char* charAttrName = (char*)malloc(len + 1);
+    	charAttrName[len] = '\0';
+    	memcpy(charAttrName, data + offset, len);
+    	attr.name = charAttrName;
+    	offset += len;
 
-    		memcpy(&attr.type, data + offset, sizeof(int));
-    		offset += sizeof(int);
+    	memcpy(&attr.type, data + offset, sizeof(int));
+    	offset += sizeof(int);
 
-    		memcpy(&attr.length, data + offset, sizeof(int));
+    	memcpy(&attr.length, data + offset, sizeof(int));
 
-    		attrs.push_back(attr);
-    	}
-
+    	attrs.push_back(attr);
     }
+    columnRsi.close();
 	return 0;
 }
 
 RC RelationManager::insertTuple(const string &tableName, const void *data, RID &rid)
 {
-    return -1;
+	vector<Attribute> attrs;
+	if (getAttributes(tableName, attrs) != 0) return -1;
+
+	FileHandle fh;
+	if(_rbfm->openFile(tableName, fh) != 0) return -1;
+
+	if(_rbfm->insertRecord(fh, attrs, data, rid) != 0) return -1;
+	if(_rbfm->closeFile(fh) != 0) return -1;
+  
+    return 0;
 }
 
 RC RelationManager::deleteTuple(const string &tableName, const RID &rid)
 {
-    return -1;
+	vector<Attribute> attrs;
+	if (getAttributes(tableName, attrs) != 0) return -1;
+
+	FileHandle fh;
+	if(_rbfm->openFile(tableName, fh) != 0) return -1;
+
+	if(_rbfm->deleteRecord(fh, attrs, rid) != 0) return -1;
+	if(_rbfm->closeFile(fh) != 0) return -1;
+    return 0;
 }
 
 RC RelationManager::updateTuple(const string &tableName, const void *data, const RID &rid)
 {
-    return -1;
+	vector<Attribute> attrs;
+	if (getAttributes(tableName, attrs) != 0) return -1;
+
+	FileHandle fh;
+	if(_rbfm->openFile(tableName, fh) != 0) return -1;
+
+	if(_rbfm->updateRecord(fh, attrs, data, rid) != 0) return -1;
+	if(_rbfm->closeFile(fh) != 0) return -1;
+	return 0;
 }
 
 RC RelationManager::readTuple(const string &tableName, const RID &rid, void *data)
 {
-    return -1;
+	vector<Attribute> attrs;
+	if (getAttributes(tableName, attrs) != 0) return -1;
+
+	FileHandle fh;
+	if(_rbfm->openFile(tableName, fh) != 0) return -1;
+
+	if(_rbfm->readRecord(fh, attrs, rid, data) != 0) return -1;
+	if(_rbfm->closeFile(fh) != 0) return -1;
+	return 0;
 }
 
 RC RelationManager::printTuple(const vector<Attribute> &attrs, const void *data)
@@ -302,7 +331,7 @@ RC RelationManager::scan(const string &tableName,
 {
 	vector<Attribute> attrs;
 	FileHandle fh;
-	RBFM_ScanIterator rbsi = new RBFM_ScanIterator();
+	RBFM_ScanIterator rbsi;
 
 	if(_rbfm->openFile(tableName, fh) != 0) return -1;
 
@@ -316,12 +345,14 @@ RC RelationManager::scan(const string &tableName,
 			break;
 		}
 		default: {
-			if (!getAttributes(tableName, attrs)) return -1;
+			if (getAttributes(tableName, attrs) != 0) return -1;
 			break;
 		}
 	}
 	if(_rbfm->scan(fh, attrs, conditionAttribute, compOp, value, attributeNames, rbsi) != 0) return -1;
-	rm_ScanIterator.set_rmsi(rmsi);
+	rm_ScanIterator.set_rbsi(&rbsi);
+	rbsi.close();
+	if(_rbfm->closeFile(fh) != 0) return -1;
 	return 0;
 }
 
@@ -383,4 +414,22 @@ void RelationManager::getColumnAttr(vector<Attribute> &attrs) {
 	attribute.type = TypeInt;
 	attribute.length = (AttrLength)4;
 	attrs.push_back(attribute);
+}
+
+RC RelationManager::getTidByTname(const string &tableName, int & tid) {
+	RM_ScanIterator rsi;
+	RID rid;
+	void *data = malloc(PAGE_SIZE + 1);
+	data[PAGE_SIZE] = '\0';
+	vector<string> tidAttr;
+	Attribute attr;
+	tidAttr.push_back("table-id");
+
+	if(scan("Tables", "table-name", EQ_OP, &tableName, tidAttr, rsi) != 0) return -1;
+	if(rsi.getNextTuple(rid, data) != RM_EOF) {
+		memcpy(&tid, data, sizeof(int));
+	}
+	rsi.close();
+
+	return 0;
 }
